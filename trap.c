@@ -77,7 +77,14 @@ trap(struct trapframe *tf)
             cpu->id, tf->cs, tf->eip);
     lapiceoi();
     break;
-   
+
+  //we need to handle the page fault with faulting address at 0xfffffff when returning from main
+  case T_PGFLT:
+    if (tf->eip == 0xffffffff) {
+      thread_exit(tf->eax);
+      return;
+    }
+
   //PAGEBREAK: 13
   default:
     if(proc == 0 || (tf->cs&3) == 0){

@@ -69,7 +69,7 @@ found:
   p->context = (struct context*)sp;
   memset(p->context, 0, sizeof *p->context);
   p->context->eip = (uint)forkret;
-
+  p->num_child_threads=0;
   return p;
 }
 
@@ -145,6 +145,8 @@ fork(void)
   np->sz = proc->sz;
   np->parent = proc;
   *np->tf = *proc->tf;
+  np->is_thread = 0;
+  np->num_child_threads = 0;
 
   // Clear %eax so that fork returns 0 in the child.
   np->tf->eax = 0;
@@ -162,7 +164,6 @@ fork(void)
   acquire(&ptable.lock);
   np->state = RUNNABLE;
   release(&ptable.lock);
-  
   return pid;
 }
 
@@ -181,8 +182,8 @@ exit(void)
   // Close all open files.
   for(fd = 0; fd < NOFILE; fd++){
     if(proc->ofile[fd]){
-      fileclose(proc->ofile[fd]);
-      proc->ofile[fd] = 0;
+        fileclose(proc->ofile[fd]);
+        proc->ofile[fd] = 0;
     }
   }
 
@@ -230,9 +231,12 @@ wait(void)
       if(p->state == ZOMBIE){
         // Found one.
         pid = p->pid;
-        kfree(p->kstack);
-        p->kstack = 0;
-        freevm(p->pgdir);
+	p->num_child_threads--;
+	if (p->num_child_threads == 0){
+          kfree(p->kstack);
+          p->kstack = 0;
+          freevm(p->pgdir);
+        }
         p->state = UNUSED;
         p->pid = 0;
         p->parent = 0;
@@ -469,5 +473,117 @@ procdump(void)
         cprintf(" %p", pc[i]);
     }
     cprintf("\n");
+  }
+}
+
+int 
+clone(void* stack) 
+{
+  int i, pid;
+  struct proc *np;
+
+  // Allocate process.
+  if ((np = allocproc()) == 0)
+    return -1;
+
+  // Copy process state from p.
+  np->pgdir = proc->pgdir;
+  np->sz = proc->sz;
+  if (proc->is_thread==1) np->parent = proc->parent;
+  else np->parent = proc;
+  *np->tf = *proc->tf;
+  np->is_thread = 1;
+
+  // Clear %eax so that fork returns 0 in the child.
+  np->tf->eax = 0;
+
+  // manipulate the stack for new thread
+  np->thread_stack = stack;
+  proc->num_child_threads++;
+
+  uint stack_bottom;
+  if (proc->tf->ebp % 4096 == 0) stack_bottom = proc->tf->ebp;
+  else stack_bottom = (proc->tf->ebp / 4096 + 1) * 4096;
+
+  np->tf->eip = proc->tf->eip;
+
+  np->tf->esp = (uint)(stack + 4096 + proc->tf->esp - stack_bottom);
+  memmove((void*)np->tf->esp, (void*)proc->tf->esp, stack_bottom - proc->tf->esp);
+
+  np->tf->ebp = proc->tf->ebp + (np->tf->esp - proc->tf->esp);
+  uint saved_ebp_proc = proc->tf->ebp;
+  uint saved_ebp_np = np->tf->ebp;
+  while (saved_ebp_np < (uint)stack + 4096) {
+    *(uint*)saved_ebp_np = *(uint*)saved_ebp_proc + (np->tf->ebp - proc->tf->ebp);
+    saved_ebp_proc = *(uint*)saved_ebp_proc;
+    saved_ebp_np = *(uint*)saved_ebp_np;
+  }
+
+ // copy open files
+  for (i = 0; i < NOFILE; i++)
+    if (proc->ofile[i])
+      np->ofile[i] = filedup(proc->ofile[i]);
+  np->cwd = idup(proc->cwd);
+
+  safestrcpy(np->name, proc->name, sizeof(proc->name));
+
+  pid = np->pid;
+
+  // lock to force the compiler to emit the np->state write last.
+  acquire(&ptable.lock);
+  np->state = RUNNABLE;
+  release(&ptable.lock);
+
+  return pid;
+}
+
+void 
+thread_exit(int ret_val)
+{
+  proc->ret_val = ret_val;
+  exit();
+}
+
+void 
+join(int tid, int * ret_p, void ** stack)
+{
+  struct proc *p;
+  int havekids;
+
+  acquire(&ptable.lock);
+  for (;;) {
+    // Scan through table looking for zombie children.
+    havekids = 0;
+    for (p = ptable.proc; p < &ptable.proc[NPROC]; p++) {
+      if (p->parent != proc || p->pid != tid)
+        continue;
+      havekids = 1;
+      if (p->state == ZOMBIE) {
+        // Found one.
+	p->num_child_threads--;
+	if (p->num_child_threads == 0){
+          kfree(p->kstack);
+          p->kstack = 0;
+          freevm(p->pgdir);
+        }
+        p->state = UNUSED;
+        p->pid = 0;
+        p->parent = 0;
+        p->name[0] = 0;
+        p->killed = 0;
+        *stack = p->thread_stack;
+        *ret_p = p->ret_val;
+        release(&ptable.lock);
+        return;
+      }
+    }
+    // No point waiting if we don't have any children.
+    if(!havekids || proc->killed){
+      release(&ptable.lock);
+      return;
+    }
+
+    // Wait for children to exit.  (See wakeup1 call in proc_exit.)
+    sleep(proc, &ptable.lock);  //DOC: wait-sleep
   }
 }

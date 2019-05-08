@@ -104,3 +104,37 @@ int sys_print_free_frame_cnt(void)
     cprintf("free-frames %d\n", free_frame_cnt);
     return 0;
 }
+
+int
+sys_clone(void)
+{
+  int stack;
+  if (argint(0, &stack) < 0)
+    return -1;
+  return clone((void*)stack);
+}
+
+int
+sys_thread_exit(void)
+{
+  int ret_val = 0;
+  if (argint(0, &ret_val) < 0)
+    return -1;
+  thread_exit(ret_val);
+  return 0;
+}
+
+
+int
+sys_join(void)
+{
+  int tid, ret_p, stack;
+  if (argint(0, &tid) < 0)
+    return -1;
+  if (argint(1, &ret_p) < 0)
+    return -1;
+  if (argint(2, &stack) < 0)
+    return -1;
+  join(tid, (int*)ret_p, (void**)stack);
+  return 0;
+}
