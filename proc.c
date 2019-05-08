@@ -493,13 +493,13 @@ clone(void* stack)
   else np->parent = proc;
   *np->tf = *proc->tf;
   np->is_thread = 1;
+  proc->num_child_threads++;
 
   // Clear %eax so that fork returns 0 in the child.
   np->tf->eax = 0;
 
   // manipulate the stack for new thread
   np->thread_stack = stack;
-  proc->num_child_threads++;
 
   uint stack_bottom;
   if (proc->tf->ebp % 4096 == 0) stack_bottom = proc->tf->ebp;
